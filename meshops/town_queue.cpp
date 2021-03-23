@@ -99,6 +99,7 @@ void TownQueue::startup(const Dictionary &town_extra)
 	Dictionary town_item = produce_item_positional("town", Dictionary(), Vector3(), 0.0f, town_extra);
 	queue.push_back(town_item);
 	queue.register_callback_native("town", this, (void (Object::*)(const Dictionary&)) &TownQueue::handle_town);
+	queue.register_callback_native("patch", this, (void (Object::*)(const Dictionary&)) &TownQueue::handle_patch);
 }
 
 void TownQueue::handle_town(const Dictionary &item)
@@ -145,13 +146,65 @@ void TownQueue::handle_town(const Dictionary &item)
 		queue.push_back(patch_item);
 	}
 }
+static float polygon_area(const PoolVector<Vector3> &polygon)
+{
+    float area = 0.0f;
+    int n = polygon.size();
+    const Vector3 *p = polygon.read().ptr();
+
+    for (int i = 0; i < n; i++)
+    {
+       int j = (i + 1) % n;
+       area += 0.5f * (p[i].x*p[j].z -  p[j].x*p[i].z);
+    }
+    return (area);
+}
+
+void TownQueue::handle_patch(const Dictionary &item)
+{
+	int i;
+	Dictionary item_data = item["data"];
+	Dictionary p_extra;
+	p_extra["plaza"] = item_data["plaza"];
+	float rotation = rnd->randf() * 2.0f * Math_PI;
+	Transform xform = Transform().rotated(Vector3(0, 1, 0), rotation);
+	PoolVector<Vector3> polygon = item_data["polygon"];
+	PoolVector<Vector3> polygon_rot;
+	polygon_rot.resize(polygon.size());
+	Vector3 position = item_data["position"];
+	AABB aabb_rot(position, Vector3()), aabb(position, Vector3());
+	for (i = 0; i < polygon.size(); i++) {
+		aabb.expand_to(polygon_rot.read()[i]);
+		Vector3 xv = xform.xform_inv(polygon_rot.read()[i]);
+		polygon_rot.write()[i] = xv;
+		aabb_rot.expand_to(xv);
+	}
+	aabb.size.y = 3.0f;
+	aabb_rot.size.y = 3.0f;
+	Vector3 grid_origin = aabb_rot.position;
+	int grid_x = (int)(aabb_rot.size.x + 8.0f / 16.0f);
+	int grid_z = (int)(aabb_rot.size.z + 8.0f / 16.0f);
+	PoolVector<uint8_t> grid;
+	grid.resize(grid_x * grid_z);
+	p_extra["polygon"] = polygon;
+	p_extra["polygon_rot"] = polygon_rot;
+	p_extra["aabb"] = aabb;
+	p_extra["aabb_rot"] = aabb_rot;
+	p_extra["grid_origin"] = grid_origin;
+	p_extra["grid_x"] = grid_x;
+	p_extra["grid_z"] = grid_z;
+	p_extra["grid"] = grid;
+	p_extra["area"] = polygon_area(polygon);
+	Dictionary lot = produce_item_positional("lot", item, item_data["position"], rotation, p_extra);
+	queue.push_back(lot);
+}
 
 void TownQueue::_bind_methods()
 {
 	ClassDB::bind_method(D_METHOD("produce_item", "item_name", "parent", "extra"),
-			     &TownQueue::produce_item);
+			     &TownQueue::produce_item, DEFVAL(Dictionary()), DEFVAL(Dictionary()));
 	ClassDB::bind_method(D_METHOD("produce_item_positional", "item_name", "parent", "position", "rotation", "extra"),
-			     &TownQueue::produce_item);
+			     &TownQueue::produce_item_positional, DEFVAL(0.0f), DEFVAL(Dictionary()));
 	ClassDB::bind_method(D_METHOD("startup", "town_extra"),
 			     &TownQueue::startup);
 	ClassDB::bind_method(D_METHOD("push_back", "item"),

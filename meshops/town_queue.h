@@ -138,6 +138,7 @@ public:
 	}
 	void startup(const Dictionary &town_extra);
 	void handle_town(const Dictionary &item);
+	void handle_patch(const Dictionary &item);
 	TownQueue();
 };
 
