@@ -85,8 +85,6 @@ const Array &GenCitySet::get_building_sets() const
 void GenCitySet::set_center_radius(float radius)
 {
 	center_radius = radius;
-	grid.set_origin(Vector3());
-	grid.set_scale(Vector3(16.0f, 8.0f, 16.0f));
 }
 float GenCitySet::get_center_radius() const
 {
@@ -94,8 +92,6 @@ float GenCitySet::get_center_radius() const
 }
 void GenCitySet::set_radius(float radius)
 {
-	grid.set_origin(Vector3());
-	grid.set_scale(Vector3(16.0f, 8.0f, 16.0f));
 	this->radius = radius;
 }
 float GenCitySet::get_radius() const

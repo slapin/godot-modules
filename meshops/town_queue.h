@@ -137,8 +137,12 @@ public:
 		queue.process();
 	}
 	void startup(const Dictionary &town_extra);
+	void init_grid(Dictionary &item);
 	void handle_town(const Dictionary &item);
 	void handle_patch(const Dictionary &item);
+	void handle_lot(const Dictionary &item);
+	void handle_residence(const Dictionary &item);
+	void handle_farm(const Dictionary &item);
 	TownQueue();
 };
 

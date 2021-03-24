@@ -3,6 +3,27 @@
 #include <core/variant.h>
 #include <core/math/geometry.h>
 #include "town_queue.h"
+#include "town.h"
+
+static inline AABB cut_left(AABB &aabb, float amount)
+{
+	if (amount > aabb.size.x)
+		return AABB();
+	AABB ret(aabb.position, Vector3(amount, aabb.size.y, aabb.size.z));
+	aabb.position.x += amount;
+	aabb.size.x -= amount;
+	return ret;
+}
+
+static inline AABB cut_ztop(AABB &aabb, float amount)
+{
+	if (amount > aabb.size.z)
+		return AABB();
+	AABB ret(aabb.position, Vector3(aabb.size.x, aabb.size.y, amount));
+	aabb.position.z += amount;
+	aabb.size.z -= amount;
+	return ret;
+}
 
 static inline Variant get_item_data(const Dictionary &item, const char *key)
 {
@@ -53,6 +74,7 @@ Dictionary TownQueue::produce_item(const StringName &item_name,
 		"set",
 		"town",
 		"patch",
+		"lot",
 		"wing"
 	};
 	set_item_name(item, item_name);
@@ -100,6 +122,34 @@ void TownQueue::startup(const Dictionary &town_extra)
 	queue.push_back(town_item);
 	queue.register_callback_native("town", this, (void (Object::*)(const Dictionary&)) &TownQueue::handle_town);
 	queue.register_callback_native("patch", this, (void (Object::*)(const Dictionary&)) &TownQueue::handle_patch);
+	queue.register_callback_native("lot", this, (void (Object::*)(const Dictionary&)) &TownQueue::handle_lot);
+	queue.register_callback_native("residence", this, (void (Object::*)(const Dictionary&)) &TownQueue::handle_residence);
+	queue.register_callback_native("farm", this, (void (Object::*)(const Dictionary&)) &TownQueue::handle_farm);
+}
+
+void TownQueue::init_grid(Dictionary &item)
+{
+	int i,j;
+	int grid_x = get_item_data(item, "grid_x");
+	int grid_z = get_item_data(item, "grid_z");
+	Vector3 grid_origin = get_item_data(item, "grid_origin"); 
+	PoolVector<uint8_t> grid = get_item_data(item, "grid");
+	PoolVector<Vector3> polygon = get_item_data(item, "polygon_rot");
+	Vector<Vector2> poly2d;
+	poly2d.resize(polygon.size());
+	const Vector3 *pd = polygon.read().ptr();
+	for (i = 0; i < polygon.size(); i++)
+		poly2d.write[i] = Vector2(pd[i].x, pd[i].z);
+	uint8_t *gptr = grid.write().ptr();
+	for (i = 0; i < grid_z; i++)
+		for (j = 0; j < grid_x; j++) {
+			Vector3 grid_pos = grid_origin + Vector3((float)j * 16.0, 0.0f, (float)i * 16.0);
+			if (Geometry::is_point_in_polygon(Vector2(grid_pos.x, grid_pos.z), poly2d))
+				gptr[i * grid_x + j] = 0;
+			else
+				gptr[i * grid_x + j] = 0xff;
+		}
+	set_item_data(item, "grid", grid);
 }
 
 void TownQueue::handle_town(const Dictionary &item)
@@ -146,7 +196,7 @@ void TownQueue::handle_town(const Dictionary &item)
 		queue.push_back(patch_item);
 	}
 }
-static float polygon_area(const PoolVector<Vector3> &polygon)
+static inline float polygon_area(const PoolVector<Vector3> &polygon)
 {
     float area = 0.0f;
     int n = polygon.size();
@@ -158,6 +208,51 @@ static float polygon_area(const PoolVector<Vector3> &polygon)
        area += 0.5f * (p[i].x*p[j].z -  p[j].x*p[i].z);
     }
     return (area);
+}
+
+static inline bool get_grid_free(const Dictionary &item, int x, int z, int dx, int dz)
+{
+	int grid_x = get_item_data(item, "grid_x");
+	int grid_z = get_item_data(item, "grid_z");
+	PoolVector<uint8_t> grid = get_item_data(item, "grid");
+	const uint8_t *data = grid.read().ptr();
+	int minx = MAX(0, x);
+	int maxx = MIN(x + dx, grid_x);
+	int minz = MAX(0, z);
+	int maxz = MIN(z + dz, grid_z);
+	int i, j;
+	if (x >= grid_x || z >= grid_z)
+		return false;
+	for (i = minz; i < maxz; i++)
+		for (j = minx; j < maxx; j++)
+			if (data[i * grid_x + j] != 0)
+				return false;
+	return true;
+}
+static inline bool get_grid_free(const Dictionary &item, const AABB &aabb)
+{
+	Vector3 grid_origin = get_item_data(item, "grid_origin");
+	Vector3 offt = aabb.position - grid_origin;
+	int x = (int)((offt.x + 8.0f) / 16.0f);
+	int z = (int)((offt.x + 8.0f) / 16.0f);
+	int dx = (int)((aabb.size.x + 8.0f) / 16.0f);
+	int dz = (int)((aabb.size.z + 8.0f) / 16.0f);
+	return get_grid_free(item, x, z, dx, dz);
+}
+static inline bool shrink_aabb(const Dictionary &item, AABB &aabb)
+{
+	while (aabb.size.x > 16.0f &&
+			aabb.size.z > 16.0f &&
+			!get_grid_free(item, aabb)) {
+		aabb.position.x += 1.0f;
+		aabb.position.z += 1.0f;
+		aabb.size.x -= 2.0f;
+		aabb.size.z -= 2.0f;
+	}
+	if (aabb.size.x > 16.0f && aabb.size.z > 16.0f)
+		return true;
+	else
+		return false;
 }
 
 void TownQueue::handle_patch(const Dictionary &item)
@@ -174,13 +269,14 @@ void TownQueue::handle_patch(const Dictionary &item)
 	Vector3 position = item_data["position"];
 	AABB aabb_rot(position, Vector3()), aabb(position, Vector3());
 	for (i = 0; i < polygon.size(); i++) {
-		aabb.expand_to(polygon_rot.read()[i]);
-		Vector3 xv = xform.xform_inv(polygon_rot.read()[i]);
+		aabb.expand_to(polygon.read()[i]);
+		Vector3 xv = xform.xform_inv(polygon.read()[i]);
 		polygon_rot.write()[i] = xv;
 		aabb_rot.expand_to(xv);
 	}
 	aabb.size.y = 3.0f;
 	aabb_rot.size.y = 3.0f;
+	AABB aabb_shrunk = aabb_rot;
 	Vector3 grid_origin = aabb_rot.position;
 	int grid_x = (int)(aabb_rot.size.x + 8.0f / 16.0f);
 	int grid_z = (int)(aabb_rot.size.z + 8.0f / 16.0f);
@@ -196,7 +292,105 @@ void TownQueue::handle_patch(const Dictionary &item)
 	p_extra["grid"] = grid;
 	p_extra["area"] = polygon_area(polygon);
 	Dictionary lot = produce_item_positional("lot", item, item_data["position"], rotation, p_extra);
+	init_grid(lot);
+	if (shrink_aabb(lot, aabb_shrunk))
+		set_item_data(lot, "aabb_rot_shrunk", aabb_shrunk);
+	else
+		set_item_data(lot, "aabb_rot_shrunk", AABB());
 	queue.push_back(lot);
+	printf("grid_x %d grid_z %d\n", grid_x, grid_z);
+}
+void TownQueue::handle_lot(const Dictionary &item)
+{
+	int grid_x = get_item_data(item, "grid_x");
+	int grid_z = get_item_data(item, "grid_z");
+	AABB aabb = get_item_data(item, "aabb_rot_shrunk");
+	Vector3 position = get_item_data(item, "position");
+	float rotation = get_item_data(item, "rotation");
+	HashMap<int, String> item_selection;
+	List<int> key_list;
+	item_selection[80] = "industry";
+	item_selection[60] = "farm";
+	item_selection[40] = "residence";
+	item_selection[20] = "recreation";
+	item_selection.get_key_list(&key_list);
+	key_list.sort();
+	key_list.invert();
+	String item_name = "farm";
+	if (grid_x > 128 && grid_z > 128)
+		item_name = "farm";
+	else if (grid_x > 64 && grid_z > 64) {
+		List<int>::Element *k = key_list.front();
+		int choice = rnd->randi() % 100;
+		while(k) {
+			int key = k->get();
+			if (choice > key) {
+				item_name = item_selection[key];
+				break;
+			}
+			k = k->next();
+		}
+	}
+	else if (grid_x <= 64 && grid_z <= 64)
+		item_name = "residence";
+	Dictionary next_item = produce_item_positional(item_name, item, position, rotation, item["data"]);
+	set_item_data(next_item, "aabb", aabb);
+	queue.push_back(next_item);
+}
+void TownQueue::handle_residence(const Dictionary &item)
+{
+	Dictionary lot = get_item_data(item, "lot");
+	GenCitySet *city = Object::cast_to<GenCitySet>(get_item_data(item, "set"));
+	const Array &buildings = city->get_building_sets();
+	ERR_FAIL_COND(buildings.size() == 0);
+	int bset_id = rnd->randi() % buildings.size();
+	GenBuildingSet *bset = Object::cast_to<GenBuildingSet>(buildings[bset_id]);
+	AABB aabb = get_item_data(item, "aabb");
+	if (aabb.size.x < 16.0f || aabb.size.z < 16.0f)
+		/* we better produce hut in this case */
+		return;
+	Dictionary p_extra;
+	p_extra["bset"] = bset;
+	p_extra["house_type"] = bset->get("house_type");
+	p_extra["placement"] = "arc";
+	p_extra["aabb"] = aabb;
+	Dictionary house = produce_item_positional("house",
+			item, get_item_data(item, "position"),
+			/* need to remove this as lot is already rotated...,
+			 * but need this for house node */
+			get_item_data(item, "rotation"),
+			p_extra);
+	queue.push_back(house);
+}
+void TownQueue::handle_farm(const Dictionary &item)
+{
+	AABB aabb = get_item_data(item, "aabb");
+	AABB field_aabb, farmtech_aabb, residence_aabb;
+	if (aabb.size.x > aabb.size.z)
+		field_aabb = cut_left(aabb, aabb.size.x * 0.5f);
+	else
+		field_aabb = cut_ztop(aabb, aabb.size.z * 0.5f);
+	if (aabb.size.x > aabb.size.z)
+		farmtech_aabb = cut_left(aabb, aabb.size.x * 0.5f);
+	else
+		farmtech_aabb = cut_ztop(aabb, aabb.size.z * 0.5f);
+	residence_aabb = aabb;
+	Vector3 field_position = field_aabb.position +
+		Vector3(field_aabb.size.x, 0.0f, field_aabb.size.z) * 0.5f;
+	Vector3 farmtech_position = farmtech_aabb.position +
+		Vector3(farmtech_aabb.size.x, 0.0f, farmtech_aabb.size.z) * 0.5f;
+	Vector3 residence_position = residence_aabb.position +
+		Vector3(residence_aabb.size.x, 0.0f, residence_aabb.size.z) * 0.5f;
+	Dictionary field_extra, farmtech_extra, residence_extra;
+	field_extra["aabb"] = field_aabb;
+	farmtech_extra["aabb"] = farmtech_aabb;
+	residence_extra["aabb"] = residence_aabb;
+	Dictionary field = produce_item_positional("field", item, field_position, 0.0f, field_extra);
+	Dictionary farmtech = produce_item_positional("farmtech", item, farmtech_position, 0.0f, farmtech_extra);
+	Dictionary residence = produce_item_positional("residence", item, residence_position, 0.0f, residence_extra);
+	queue.push_back(field);
+	queue.push_back(farmtech);
+	queue.push_back(residence);
 }
 
 void TownQueue::_bind_methods()
@@ -223,7 +417,7 @@ void TownQueue::_bind_methods()
 			     &TownQueue::unregister_callback);
 	ClassDB::bind_method(D_METHOD("process"),
 			     &TownQueue::process);
-	ClassDB::bind_method(D_METHOD("process", "allocate_space", "aabb", "rotation", "patch"),
+	ClassDB::bind_method(D_METHOD("allocate_space", "aabb", "rotation", "patch"),
 			&TownQueue::allocate_space);
 }
 bool TownQueue::allocate_space(const AABB& aabb, float rotation, const Dictionary &patch)

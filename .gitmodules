@@ -1,0 +1,8 @@
+[submodule "voronoi/thirdparty/voronoi"]
+	path = voronoi/thirdparty/voronoi
+	url = https://github.com/JCash/voronoi
+	branch = dev
+[submodule "voxel"]
+	path = voxel
+	url = https://github.com/Zylann/godot_voxel
+	branch = master

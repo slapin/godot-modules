@@ -4,7 +4,7 @@
 #include <scene/resources/mesh.h>
 #include <scene/resources/material.h>
 
-#include "city_grid.h"
+// #include "city_grid.h"
 
 class MeshItemList: public Reference {
 	GDCLASS(MeshItemList, Reference)
@@ -40,7 +40,6 @@ protected:
 	float radius;
 	int min_buildings;
 	int max_buildings;
-	TownGridData grid;
 public:
 	void set_guildhall_building_set(const Ref<GenBuildingSet> set);
 	Ref<GenBuildingSet> get_guildhall_building_set() const;
